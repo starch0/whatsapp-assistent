@@ -1,0 +1,1 @@
+A ideia é criar um assistente financeiro bem simples para praticar alguns conceitos no JS. 
