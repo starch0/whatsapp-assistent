@@ -3,6 +3,8 @@ import { Client } from "whatsapp-web.js";
 import pkg from "qrcode-terminal";
 import path from "path";
 import { fileURLToPath } from "url";
+import sqlite3 from 'sqlite3';
+import { open } from 'sqlite';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const sessionDir = path.join(__dirname, 'session');
@@ -10,32 +12,36 @@ const sessionDir = path.join(__dirname, 'session');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-let balance = 0;
-let transactionHistory = [];
-
 const client = new Client({
     puppeteer: {
         userDataDir: sessionDir
     }
 });
 
-function addTransaction(value, type) {
-    transactionHistory.push({
-        value: value,
-        type: type,
-        date: new Date().toLocaleString()
+let db;
+(async () => {
+    db = await open({
+        filename: './database.db',
+        driver: sqlite3.Database
     });
-}
-
-function formatExtract() {
-    let message = "Extrato Atual:\n\n";
-    message += `Saldo atual: R$${balance}\n\n`;
-    message += "Histórico de transações:\n";
-    transactionHistory.forEach((transaction, index) => {
-        message += `${index + 1}. ${transaction.type} R$${transaction.value} - ${transaction.date}\n`;
-    });
-    return message;
-}
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS users (
+         id INTEGER PRIMARY KEY AUTOINCREMENT,
+         whatsapp_id TEXT UNIQUE,
+         balance INTEGER DEFAULT 0
+      );
+    `);
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS transactions (
+         id INTEGER PRIMARY KEY AUTOINCREMENT,
+         user_id INTEGER,
+         value INTEGER,
+         type TEXT,
+         date TEXT,
+         FOREIGN KEY(user_id) REFERENCES users(id)
+      );
+    `);
+})();
 
 client.on("qr", (qr) => {
     console.log("QR code:", qr);
@@ -46,9 +52,36 @@ client.on("ready", () => {
     console.log("WhatsApp client is ready!");
 });
 
-client.on("message", (message) => {
+client.on("message", async (message) => {
     const msgBody = message.body;
-    console.log(message.from, msgBody);
+    const whatsappId = message.from;
+
+    let user = await db.get("SELECT * FROM users WHERE whatsapp_id = ?", whatsappId);
+    if (!user) {
+        const result = await db.run("INSERT INTO users (whatsapp_id, balance) VALUES (?, 0)", whatsappId);
+        user = { id: result.lastID, whatsapp_id: whatsappId, balance: 0 };
+    }
+
+    async function addTransaction(value, type) {
+       await db.run(
+         "INSERT INTO transactions (user_id, value, type, date) VALUES (?, ?, ?, ?)",
+         user.id,
+         value,
+         type,
+         new Date().toLocaleString()
+       );
+    }
+
+    async function formatExtract() {
+       let extract = "Extrato Atual:\n\n";
+       extract += `Saldo atual: R$${user.balance}\n\n`;
+       extract += "Histórico de transações:\n";
+       const transactions = await db.all("SELECT * FROM transactions WHERE user_id = ? ORDER BY id", user.id);
+       transactions.forEach((transaction, index) => {
+           extract += `${index + 1}. ${transaction.type} R$${transaction.value} - ${transaction.date}\n`;
+       });
+       return extract;
+    }
 
     if (msgBody.startsWith('+') || msgBody.startsWith('-')) {
         try {
@@ -58,28 +91,29 @@ client.on("message", (message) => {
                 return;
             }
             if (msgBody.startsWith('+')) {
-                balance += value;
-                addTransaction(value, 'Receita');
-                message.reply(`Receita de R$${value} adicionada com sucesso!\nNovo saldo: R$${balance}`);
+                user.balance += value;
+                await db.run("UPDATE users SET balance = ? WHERE id = ?", user.balance, user.id);
+                await addTransaction(value, 'Receita');
+                message.reply(`Receita de R$${value} adicionada com sucesso!\nNovo saldo: R$${user.balance}`);
             } else if (msgBody.startsWith('-')) {
-                if (value > balance) {
+                if (value > user.balance) {
                     message.reply("Valor da despesa maior que o saldo disponível!");
                     return;
                 }
-                balance -= value;
-                addTransaction(value, 'Despesa');
-                message.reply(`Despesa de R$${value} registrada com sucesso!\nNovo saldo: R$${balance}`);
+                user.balance -= value;
+                await db.run("UPDATE users SET balance = ? WHERE id = ?", user.balance, user.id);
+                await addTransaction(value, 'Despesa');
+                message.reply(`Despesa de R$${value} registrada com sucesso!\nNovo saldo: R$${user.balance}`);
             }
         } catch (error) {
             message.reply("Valor inválido! Por favor, use o formato correto: + ou - seguido de um número.");
         }
     }
-    // Other commands
     else if (msgBody === "!total") {
-        message.reply(`Seu saldo atual é de R$${balance}`);
+        message.reply(`Seu saldo atual é de R$${user.balance}`);
     } 
     else if (msgBody === "!extrato") {
-        message.reply(formatExtract());
+        message.reply(await formatExtract());
     }
     else if (msgBody === "!ajuda") {
         const helpMessage = "Comandos disponíveis:\n\n" +
