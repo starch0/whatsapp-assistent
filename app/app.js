@@ -55,6 +55,7 @@ client.on("ready", () => {
 client.on("message", async (message) => {
     const msgBody = message.body;
     const whatsappId = message.from;
+    const lowerMsg = msgBody.toLowerCase();
 
     let user = await db.get("SELECT * FROM users WHERE whatsapp_id = ?", whatsappId);
     if (!user) {
@@ -83,31 +84,41 @@ client.on("message", async (message) => {
        return extract;
     }
 
-    if (msgBody.startsWith('+') || msgBody.startsWith('-')) {
-        try {
-            const value = parseInt(msgBody.slice(1));
-            if (isNaN(value)) {
-                message.reply("Valor inválido! Por favor, use o formato correto: + ou - seguido de um número.");
-                return;
-            }
-            if (msgBody.startsWith('+')) {
-                user.balance += value;
-                await db.run("UPDATE users SET balance = ? WHERE id = ?", user.balance, user.id);
-                await addTransaction(value, 'Receita');
-                message.reply(`Receita de R$${value} adicionada com sucesso!\nNovo saldo: R$${user.balance}`);
-            } else if (msgBody.startsWith('-')) {
-                if (value > user.balance) {
-                    message.reply("Valor da despesa maior que o saldo disponível!");
-                    return;
-                }
-                user.balance -= value;
-                await db.run("UPDATE users SET balance = ? WHERE id = ?", user.balance, user.id);
-                await addTransaction(value, 'Despesa');
-                message.reply(`Despesa de R$${value} registrada com sucesso!\nNovo saldo: R$${user.balance}`);
-            }
-        } catch (error) {
-            message.reply("Valor inválido! Por favor, use o formato correto: + ou - seguido de um número.");
+    if (lowerMsg.startsWith("ganhei") || lowerMsg.startsWith("recebi")) {
+        const parts = msgBody.split(" ");
+        if (parts.length < 2) {
+            message.reply("Por favor, informe o valor após o comando (ex.: 'ganhei 100').");
+            return;
         }
+        const value = parseInt(parts[1]);
+        if (isNaN(value)) {
+            message.reply("Valor inválido! Certifique-se de informar um número válido após o comando.");
+            return;
+        }
+        user.balance += value;
+        await db.run("UPDATE users SET balance = ? WHERE id = ?", user.balance, user.id);
+        await addTransaction(value, 'Receita');
+        message.reply(`Recebi uma receita de R$${value} com sucesso!\nNovo saldo: R$${user.balance}`);
+    }
+    else if (lowerMsg.startsWith("gastei") || lowerMsg.startsWith("paguei")) {
+        const parts = msgBody.split(" ");
+        if (parts.length < 2) {
+            message.reply("Por favor, informe o valor após o comando (ex.: 'gastei 50').");
+            return;
+        }
+        const value = parseInt(parts[1]);
+        if (isNaN(value)) {
+            message.reply("Valor inválido! Certifique-se de informar um número válido após o comando.");
+            return;
+        }
+        if (value > user.balance) {
+            message.reply("Valor da despesa maior que o saldo disponível!");
+            return;
+        }
+        user.balance -= value;
+        await db.run("UPDATE users SET balance = ? WHERE id = ?", user.balance, user.id);
+        await addTransaction(value, 'Despesa');
+        message.reply(`Despesa de R$${value} registrada com sucesso!\nNovo saldo: R$${user.balance}`);
     }
     else if (msgBody === "!total") {
         message.reply(`Seu saldo atual é de R$${user.balance}`);
@@ -117,8 +128,8 @@ client.on("message", async (message) => {
     }
     else if (msgBody === "!ajuda") {
         const helpMessage = "Comandos disponíveis:\n\n" +
-                            "+[valor] - Adicionar receita\n" +
-                            "-[valor] - Registrar despesa\n" +
+                            "ganhei [valor] ou recebi [valor] - Adicionar receita\n" +
+                            "gastei [valor] ou paguei [valor] - Registrar despesa\n" +
                             "!total - Ver saldo atual\n" +
                             "!extrato - Ver histórico completo\n" +
                             "!ajuda - Ver esta lista de comandos\n" +
